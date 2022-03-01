@@ -1,0 +1,71 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+  - master
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+- stage: DEV
+  displayName: 'Build LogicApp Artifacts'
+  jobs:
+    - job: logic_app_build
+      displayName: "Build and publish logic app"
+      steps:
+        - task: AzurePowerShell@4
+          displayName: "Generate connections.json file"
+          inputs:
+            azureSubscription: $(azureConnection)
+            ScriptType: "FilePath"
+            ScriptPath: "$(System.DefaultWorkingDirectory)/.pipeline/scripts/Generate-Connections.ps1"
+            FailOnStandardError: true
+            azurePowerShellVersion: LatestVersion
+            pwsh: true
+            ScriptArguments: >-
+              -resourceGroup $(resourceGroupName)
+        - task: ArchiveFiles@2
+          displayName: 'Create project zip'
+          inputs:
+            rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+            includeRootFolder: false
+            archiveType: 'zip'
+            archiveFile: '$(Build.ArtifactStagingDirectory)/artifacts.zip'
+            replaceExistingArchive: true
+        - task: PublishBuildArtifacts@1
+          inputs:
+            pathToPublish: $(Build.ArtifactStagingDirectory)
+            artifactName: '$(logicAppCIArtifactName)'
+        - task: CopyFiles@2
+          inputs:
+            contents: '/home/vsts/work/1/s/?(*.yml|*.xml|*.json)'
+            targetFolder: $(Build.ArtifactStagingDirectory)
+        - task: PublishPipelineArtifact@1
+          displayName: 'Publish project zip artifact'
+          inputs:
+            targetPath: '$(Build.ArtifactStagingDirectory)'
+            artifact: '$(logicAppCIArtifactName)-configuration'
+            publishLocation: 'pipeline'
+
+    - deployment: deploy_logicapp_resources
+      dependsOn: logic_app_build
+      displayName: 'Deploy Logic App'
+      environment: dev
+      variables:
+        deploymentMode: 'Incremental'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - task: AzureFunctionApp@1
+              displayName: 'Deploy logic app workflows'
+              inputs:
+                azureSubscription: '$(azureConnection)'
+                appType: 'functionApp'
+                appName: '$(logicAppName)'
+                package: '$(Pipeline.Workspace)/$(logicAppCIArtifactName)/artifacts.zip'
+                appSettings: ''
+                deploymentMethod: 'zipDeploy'
